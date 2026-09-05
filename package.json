@@ -1,0 +1,165 @@
+{
+  "name": "ai-mentat-coolify-local",
+  "version": "0.1.0",
+  "description": "Hexstack Mentat Coolify \u2014 local Coolify self-host desktop app",
+  "main": "electron-main.bundle.js",
+  "shop_link": "https://hexstack.app/mentat-coolify/",
+  "itch_io": {
+    "user": "hexstack-app",
+    "game": "mentat-coolify"
+  },
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "run": "npm run setup && node sdk/utils/bundle-electron.js && electron electron-main.bundle.js",
+    "build": "node scripts/build-app.js",
+    "check": "npm run build && node scripts/start-built.js",
+    "gui": "node sdk/utils/bundle-electron.js && electron electron-main.bundle.js",
+    "test": "node --test 'test/*.js'",
+    "test:mutation": "sh test/discriminates.sh",
+    "bundle": "node sdk/utils/bundle-electron.js",
+    "build:mac": "node sdk/utils/bundle-electron.js && electron-builder --mac dmg --universal -c.mac.identity=null",
+    "build:mac:signed": "node sdk/utils/bundle-electron.js && APPLE_KEYCHAIN_PROFILE=CCO-notary electron-builder --mac dmg --universal",
+    "build:mac:store": "node sdk/utils/bundle-electron.js && electron-builder --mac mas",
+    "build:win": "node sdk/utils/bundle-electron.js && electron-builder --win msi",
+    "build:win:store": "node sdk/utils/bundle-electron.js && electron-builder --win msi -c.msi.artifactName=\"mentat-coolify-${version}_store.msi\"",
+    "build:linux": "node sdk/utils/bundle-electron.js && electron-builder --linux deb",
+    "build:all": "npm run build:mac && npm run build:mac:store && npm run build:win && npm run build:linux",
+    "dist": "npm run build:all",
+    "publish": "node sdk/logic/publish.js --app=mentat-coolify",
+    "release": "node sdk/logic/release.js",
+    "download:lima": "node scripts/download-lima.js"
+  },
+  "keywords": [
+    "coolify",
+    "self-hosted",
+    "paas",
+    "docker",
+    "electron",
+    "mentat"
+  ],
+  "author": "HexStack",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.16",
+    "npm": ">=10.0.0"
+  },
+  "signing": {
+    "appName": "Hexstack Mentat Coolify",
+    "bundleId": "app.hexstack.mentat-coolify",
+    "minMacOS": "10.15",
+    "developerIdApplication": "Developer ID Application: Roman Chuvilev (A646WU4GA4)",
+    "notaryProfile": "CCO-notary"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2"
+  },
+  "build": {
+    "appId": "app.hexstack.ai-mentat-coolify-local",
+    "productName": "ai-mentat-coolify-local",
+    "publish": {
+      "provider": "generic",
+      "url": ""
+    },
+    "directories": {
+      "output": "/.hexstack-app/ai-mentat-coolify-local"
+    },
+    "artifactName": "mentat-coolify-${version}.${ext}",
+    "electronVersion": "44.0.0",
+    "buildDependenciesFromSource": false,
+    "npmRebuild": false,
+    "asarUnpack": [
+      "pty-helper.py"
+    ],
+    "files": [
+      "electron-main.bundle.js",
+      "preload.js",
+      "app.html",
+      "app.css",
+      "update-ui.js",
+      "pty-helper.py",
+      "icon.png",
+      "config.js",
+      "vendor/",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "electron-main.bundle.js"
+    },
+    "mac": {
+      "icon": "icon.png",
+      "category": "public.app-category.developer-tools",
+      "identity": "Roman Chuvilev (A646WU4GA4)",
+      "notarize": true,
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+      "target": [
+        "dmg"
+      ],
+      "extraResources": [
+        {
+          "from": "lima-bin",
+          "to": "lima-bin",
+          "filter": [
+            "**/*"
+          ]
+        },
+        {
+          "from": "lima-coolify.yaml",
+          "to": "lima-coolify.yaml"
+        }
+      ]
+    },
+    "mas": {
+      "identity": "3rd Party Mac Developer Application: Roman Chuvilev (A646WU4GA4)",
+      "provisioningProfile": "./certs/mas-mentat-coolify.provisionprofile",
+      "entitlements": "entitlements.mas.plist",
+      "entitlementsInherit": "entitlements.mas.inherit.plist"
+    },
+    "win": {
+      "icon": "icon.png",
+      "target": [
+        "msi"
+      ],
+      "extraResources": [
+        {
+          "from": "lima-coolify.yaml",
+          "to": "lima-coolify.yaml"
+        }
+      ]
+    },
+    "msi": {
+      "artifactName": "mentat-coolify-${version}.msi"
+    },
+    "linux": {
+      "icon": "icon.png",
+      "target": [
+        "deb"
+      ],
+      "category": "Development",
+      "extraResources": [
+        {
+          "from": "lima-bin",
+          "to": "lima-bin",
+          "filter": [
+            "**/*"
+          ]
+        },
+        {
+          "from": "lima-coolify.yaml",
+          "to": "lima-coolify.yaml"
+        }
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hexstack-apps/ai-mentat-coolify-local.git"
+  },
+  "productName": "ai-mentat-coolify-local"
+}

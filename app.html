@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coolify Mentat</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<div class="top-bar">
+  <a href="#" class="top-bar__logo" onclick="event.preventDefault(); window.electronAPI.openExternal('https://hexstack.app')">hexstack.app</a>
+  <div class="top-bar__spacer"></div>
+</div>
+
+<div class="tab-bar">
+  <button class="active" data-tab="coolify">Coolify Localhost</button>
+  <button data-tab="setup">Setup</button>
+  <button data-tab="tunnel">Cloudflare Tunnel</button>
+  <button data-tab="faq">FAQ</button>
+</div>
+
+<div class="tab-content">
+  <!-- Tab 1: Coolify web UI -->
+  <div id="tab-coolify" class="panel active">
+    <div id="coolify-loading" class="loading-overlay">
+      <div class="loading-content">
+        <div class="loading-icon">COOLIFY</div>
+        <div id="coolify-loading-text">Checking Coolify status...</div>
+        <div class="progress-bar-track">
+          <div id="coolify-progress" class="progress-bar-fill"></div>
+        </div>
+        <div id="coolify-loading-detail" class="loading-detail"></div>
+        <div class="loading-detail loading-detail--permanent">The first-time setup (VM + Coolify install) runs from the Setup tab. After that, Coolify launches on <code>http://localhost:8000</code>.</div>
+      </div>
+    </div>
+    <iframe id="coolify-frame" src="about:blank"></iframe>
+  </div>
+
+  <!-- Tab 2: Setup -->
+  <div id="tab-setup" class="panel">
+    <div class="panel-scroll">
+      <h2 class="section-title">Coolify Local Setup</h2>
+
+      <div id="setup-stale" class="stale-note" style="display:none">
+        Checking current state… showing the last confirmed status until the VM answers.
+      </div>
+
+      <div class="card">
+        <h3><span id="vm-dot" class="status-dot"></span> Step 1 — Lima VM (Docker host)</h3>
+        <p class="step-desc">On macOS the Coolify stack runs inside a bundled Lima VM (Apple Virtualization.framework). On Linux a local Docker daemon is used directly when Lima is not available.</p>
+        <div class="row">
+          <button class="btn" id="vm-create-btn" onclick="vmCreate()">Create &amp; Start VM</button>
+          <button class="btn secondary" id="vm-stop-btn" onclick="vmStop()" style="display:none">Stop VM</button>
+          <button class="btn secondary" onclick="openVmShell()">Open VM Shell</button>
+        </div>
+        <div id="vm-msg" class="msg"></div>
+      </div>
+
+      <div class="card">
+        <h3><span id="coolify-install-dot" class="status-dot"></span> Step 2 — Install Coolify</h3>
+        <p class="step-desc">Runs the official <code>https://cdn.coollabs.io/coolify/install.sh</code> inside the VM. The script installs Docker and bootstraps the Coolify docker-compose stack. This can take several minutes on first run.</p>
+        <div class="row">
+          <button class="btn" id="coolify-install-btn" onclick="coolifyInstall()">Install Coolify</button>
+        </div>
+        <div id="coolify-install-msg" class="msg"></div>
+      </div>
+
+      <div class="card">
+        <h3><span id="coolify-run-dot" class="status-dot"></span> Step 3 — Start / Stop Coolify</h3>
+        <p class="step-desc">Brings the Coolify stack up or down via <code>docker compose</code>. Start once and leave it running — Coolify hosts long-lived applications.</p>
+        <div class="row">
+          <button class="btn" id="coolify-start-btn" onclick="coolifyStart()">Start Coolify</button>
+          <button class="btn danger" id="coolify-stop-btn" onclick="coolifyStop()" style="display:none">Stop Coolify</button>
+          <button class="btn secondary" onclick="openCoolifyUi()">Open Coolify UI</button>
+        </div>
+        <div id="coolify-run-msg" class="msg"></div>
+      </div>
+
+      <div class="card">
+        <h3>Setup Log</h3>
+        <pre id="setup-log" class="install-log"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 3: Cloudflare Tunnel -->
+  <div id="tab-tunnel" class="panel">
+    <div class="panel-scroll">
+      <h2 class="section-title">Cloudflare Tunnel</h2>
+      <p class="step-desc" style="margin-bottom:16px">Expose your local Coolify through a Cloudflare-managed domain. The HTTP route points at the Coolify UI (<code>localhost:8000</code>). The optional SSH route exposes the VM's SSH daemon (<code>localhost:2222</code>) for remote deployments over <code>cloudflared access</code>.</p>
+
+      <div class="card" id="step-install">
+        <h3><span id="cf-dot" class="status-dot"></span> Step 1 — Install cloudflared</h3>
+        <div class="row">
+          <button class="btn" id="cf-install-btn" onclick="cfInstall()">Install cloudflared</button>
+        </div>
+        <div id="cf-msg" class="msg"></div>
+      </div>
+
+      <div class="card" id="step-auth" style="display:none">
+        <h3><span id="auth-dot" class="status-dot"></span> Step 2 — Authenticate with Cloudflare</h3>
+        <p class="step-desc">Opens a browser where you authorize cloudflared against your Cloudflare account. You need a domain managed by Cloudflare DNS.</p>
+        <p class="step-desc">No account? <a href="#" onclick="window.electronAPI.openExternal('https://dash.cloudflare.com/sign-up'); return false">Sign up</a> · <a href="#" onclick="window.electronAPI.openExternal('https://developers.cloudflare.com/fundamentals/setup/manage-domains/add-site/'); return false">add a domain</a>.</p>
+        <div class="row">
+          <button class="btn" id="auth-btn" onclick="cfLogin()">Authenticate</button>
+        </div>
+        <div id="auth-msg" class="msg"></div>
+      </div>
+
+      <div class="card" id="step-setup" style="display:none">
+        <h3><span id="setup-dot" class="status-dot"></span> Step 3 — Create Named Tunnel</h3>
+        <p class="step-desc">Pick hostnames for HTTP (Coolify UI) and optionally SSH. Both must be on a Cloudflare-managed zone.</p>
+        <div class="row"><label>HTTP host</label><input type="text" id="http-host" placeholder="coolify.example.com"></div>
+        <div class="row"><label>SSH host</label><input type="text" id="ssh-host" placeholder="ssh-coolify.example.com (optional)"></div>
+        <div class="row">
+          <button class="btn" id="setup-btn" onclick="cfSetupTunnel()">Create Tunnel &amp; DNS</button>
+        </div>
+        <div id="setup-msg" class="msg"></div>
+      </div>
+
+      <div class="card" id="step-domain" style="display:none">
+        <h3><span id="domain-dot" class="status-dot"></span> Step 4 — Apply Domain to Coolify</h3>
+        <p class="step-desc">
+          Coolify builds absolute links — webhooks, OAuth callbacks, magic links — from
+          <code>APP_URL</code>. Until that points at your tunnel hostname those links stay
+          unreachable from outside, even while the UI itself is exposed. This rewrites
+          <code>APP_URL</code> in Coolify's <code>.env</code> (keeping a timestamped backup)
+          and restarts the stack.
+        </p>
+        <div id="domain-current" class="step-desc" style="margin-bottom:10px"></div>
+        <div class="row">
+          <button class="btn" id="domain-apply-btn" onclick="applyDomain()">Apply HTTP host to Coolify</button>
+        </div>
+        <div id="domain-msg" class="msg"></div>
+      </div>
+
+      <div class="card" id="step-run" style="display:none">
+        <h3><span id="tunnel-dot" class="status-dot"></span> Tunnel</h3>
+        <div id="tunnel-configured-host" class="step-desc" style="margin-bottom:10px"></div>
+        <div class="row">
+          <button class="btn" id="tunnel-start-btn" onclick="tunnelStart()">Start Tunnel</button>
+          <button class="btn danger" id="tunnel-stop-btn" onclick="tunnelStop()" style="display:none">Stop Tunnel</button>
+        </div>
+        <div id="tunnel-msg" class="msg"></div>
+        <div id="tunnel-url-row" class="row" style="display:none;margin-top:10px">
+          <label>HTTP</label>
+          <div class="url-display" id="tunnel-url"></div>
+          <button class="icon-btn" onclick="copyUrl('tunnel-url')" title="Copy">&#x1F4CB;</button>
+          <button class="icon-btn" onclick="openUrl('tunnel-url')" title="Open">&#x1F517;</button>
+        </div>
+        <div id="ssh-url-row" class="row" style="display:none;margin-top:10px">
+          <label>SSH</label>
+          <div class="url-display" id="ssh-host-display"></div>
+          <button class="icon-btn" onclick="copySshCommand()" title="Copy ssh command">&#x1F4CB;</button>
+        </div>
+      </div>
+
+      <div id="tunnel-log-card" class="card" style="display:none">
+        <h3>cloudflared output</h3>
+        <pre id="tunnel-log" class="tunnel-log"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 4: FAQ -->
+  <div id="tab-faq" class="panel">
+    <div class="panel-scroll">
+      <h2 class="section-title">Frequently Asked Questions</h2>
+
+      <div class="card">
+        <h3>Persistent storage locations</h3>
+        <p class="step-desc">Everything is file-backed and survives app restarts, OS reboots, and app updates. Nothing is wiped when you reinstall the app itself.</p>
+        <div class="paths-grid" id="paths-grid">
+          <div class="paths-row"><span class="paths-label">App data</span><code class="paths-val" id="path-dataDir">—</code><button class="icon-btn" onclick="window.electronAPI.openDataDir()" title="Reveal">&#x1F4C2;</button></div>
+          <div class="paths-row"><span class="paths-label">Settings file</span><code class="paths-val" id="path-settingsFile">—</code></div>
+          <div class="paths-row"><span class="paths-label">Setup log</span><code class="paths-val" id="path-setupLog">—</code><button class="icon-btn" onclick="window.electronAPI.openLogsDir()" title="Reveal">&#x1F4C2;</button></div>
+          <div class="paths-row"><span class="paths-label">Lima VM (disk image)</span><code class="paths-val" id="path-limaDir">—</code><button class="icon-btn" onclick="window.electronAPI.openLimaDir()" title="Reveal">&#x1F4C2;</button></div>
+          <div class="paths-row"><span class="paths-label">Cloudflared</span><code class="paths-val" id="path-cloudflaredDir">—</code></div>
+          <div class="paths-row"><span class="paths-label">Coolify data (in VM)</span><code class="paths-val" id="path-coolifyDataInVm">—</code></div>
+        </div>
+      </div>
+
+      <details class="faq-item">
+        <summary>What is Coolify and how does this app wrap it?</summary>
+        <div class="faq-body">
+          <p><strong>Coolify</strong> is an open-source, self-hosted platform-as-a-service — think Heroku/Vercel running on your own machine. It deploys apps, databases, and services from Git as Docker containers.</p>
+          <p><strong>This app</strong> runs the Coolify stack locally for you: on macOS it spins up a bundled Lima VM (Apple Virtualization.framework, no Docker Desktop required), then runs Coolify's official <code>install.sh</code> inside. The UI you see in the first tab is the real Coolify web interface served at <code>http://localhost:8000</code>.</p>
+          <p>Use the <strong>Setup</strong> tab to create the VM and install Coolify the first time. Use the <strong>Cloudflare Tunnel</strong> tab to expose Coolify (and optionally SSH) to the public internet without opening router ports.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>First launch — what happens step by step?</summary>
+        <div class="faq-body">
+          <ol>
+            <li>Go to the <strong>Setup</strong> tab.</li>
+            <li>Click <strong>Create &amp; Start VM</strong> — Lima downloads an Ubuntu 24.04 cloud image and boots the VM (a few minutes on first run).</li>
+            <li>Click <strong>Install Coolify</strong> — runs the official install script inside the VM. Installs Docker + pulls the Coolify containers (several minutes).</li>
+            <li>Click <strong>Start Coolify</strong> — brings up the docker-compose stack.</li>
+            <li>Switch to the <strong>Coolify Localhost</strong> tab — the UI connects to <code>localhost:8000</code> as soon as the stack is ready.</li>
+            <li>On first boot, Coolify asks you to create the root user account. It's stored inside the VM at <code>/data/coolify</code>.</li>
+          </ol>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>SSH deployments and "different connections" tunneling</summary>
+        <div class="faq-body">
+          <p>Coolify manages remote servers over SSH. Two related tunneling flows are supported from the <strong>Cloudflare Tunnel</strong> tab:</p>
+          <ul>
+            <li><strong>HTTP tunnel</strong> — exposes the Coolify UI (port 8000) under a public hostname. Use this to access the dashboard from anywhere.</li>
+            <li><strong>SSH tunnel</strong> — exposes the VM's SSH daemon (the VM's <code>:22</code>, host-forwarded to <code>:2222</code>) under a separate hostname. Connect with <code>ssh -o ProxyCommand="cloudflared access ssh --hostname %h" user@ssh-coolify.example.com</code>. This lets you git-push deployments or run Coolify-side commands without exposing your home network.</li>
+          </ul>
+          <p>Outbound SSH from Coolify to remote servers you manage is handled by Coolify itself (Configuration → Servers in its UI).</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>Where is Coolify data stored? Does uninstalling the app delete it?</summary>
+        <div class="faq-body">
+          <p>All Coolify data — database, deployment configs, SSH keys it generates, app build artefacts — lives inside the Lima VM at <code>/data/coolify</code>. The VM itself lives at <code>~/.coolify-lima/</code>.</p>
+          <p>Deleting the Mentat app does not delete the VM. To fully remove Coolify: stop it from the Setup tab, then remove the VM with <code>limactl --tty=false delete -f coolify</code> and delete <code>~/.coolify-lima/</code>.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary>Port conflicts — Coolify refuses to start</summary>
+        <div class="faq-body">
+          <p>Coolify binds 8000, 6001, 6002, 8080, and 2222 on the host. If any of those are in use (e.g. another dev server), stop the conflicting process and retry. On macOS, <code>lsof -iTCP -P -n | grep LISTEN</code> will show what's holding the port.</p>
+        </div>
+      </details>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  // ── Tab switching ──
+  document.querySelectorAll('.tab-bar button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  // ── Helpers ──
+  function setDot(id, color) { const el = document.getElementById(id); if (el) el.className = 'status-dot ' + color; }
+  function setMsg(id, text, type) { const el = document.getElementById(id); if (!el) return; el.textContent = text; el.className = 'msg ' + (type || ''); }
+  function toggle(showId, hideId) {
+    const a = document.getElementById(showId), b = document.getElementById(hideId);
+    if (a) a.style.display = '';
+    if (b) b.style.display = 'none';
+  }
+  function setProgress(pct, text, detail) {
+    const bar = document.getElementById('coolify-progress');
+    const t = document.getElementById('coolify-loading-text');
+    const d = document.getElementById('coolify-loading-detail');
+    if (pct !== null && bar) bar.style.width = pct + '%';
+    if (text && t) t.textContent = text;
+    if (detail && d) d.textContent = detail;
+  }
+
+  // ── Persistent-storage paths (FAQ) ──
+  (async () => {
+    try {
+      const p = await window.electronAPI.setupPaths();
+      for (const [k, v] of Object.entries(p)) {
+        const el = document.getElementById('path-' + k);
+        if (el) el.textContent = v;
+      }
+    } catch {}
+  })();
+
+  // ── Setup status / actions ──
+  async function refreshSetup() {
+    try {
+      const s = await window.electronAPI.setupStatus();
+
+      // Status flags are tri-state: true / false / null. `null` means the probe
+      // could not answer (VM still booting, limactl slow), which must render as
+      // "checking" — showing red there is a false negative, and was the reason
+      // an installed-and-running Coolify still lit up red on launch.
+      const dot = (v, unknown = 'unknown') => v === true ? 'green' : v === null ? unknown : 'red';
+
+      setDot('vm-dot', s.vmRunning === true ? 'green' : s.vmRunning === null ? 'unknown' : (s.vmExists ? 'amber' : 'red'));
+      setDot('coolify-install-dot', dot(s.coolifyInstalled));
+      setDot('coolify-run-dot', dot(s.coolifyRunning));
+
+      const staleEl = document.getElementById('setup-stale');
+      if (staleEl) staleEl.style.display = s.stale ? '' : 'none';
+
+      // Only flip a button pair on a definitive answer; leave the last state
+      // visible while a probe is unknown.
+      if (s.vmRunning === true) toggle('vm-stop-btn', 'vm-create-btn');
+      else if (s.vmRunning === false) toggle('vm-create-btn', 'vm-stop-btn');
+      if (s.coolifyRunning === true) toggle('coolify-stop-btn', 'coolify-start-btn');
+      else if (s.coolifyRunning === false) toggle('coolify-start-btn', 'coolify-stop-btn');
+      if (s.coolifyInstalled === true) document.getElementById('coolify-install-btn').textContent = 'Reinstall Coolify';
+      return s;
+    } catch (e) { console.error(e); return null; }
+  }
+
+  async function vmCreate() {
+    const btn = document.getElementById('vm-create-btn');
+    btn.disabled = true; setDot('vm-dot', 'amber'); setMsg('vm-msg', 'Starting VM...', '');
+    try {
+      const r = await window.electronAPI.setupLimaCreate();
+      if (r.success) { setDot('vm-dot', 'green'); setMsg('vm-msg', 'VM running', 'success'); toggle('vm-stop-btn', 'vm-create-btn'); }
+      else { setDot('vm-dot', 'red'); setMsg('vm-msg', r.error || 'Failed', 'error'); }
+    } catch (e) { setDot('vm-dot', 'red'); setMsg('vm-msg', e.message, 'error'); }
+    btn.disabled = false;
+    refreshSetup();
+  }
+
+  async function vmStop() {
+    const btn = document.getElementById('vm-stop-btn');
+    btn.disabled = true; setMsg('vm-msg', 'Stopping VM...', '');
+    try {
+      const r = await window.electronAPI.setupLimaStop();
+      if (r.success) { setDot('vm-dot', 'red'); setMsg('vm-msg', 'VM stopped', ''); toggle('vm-create-btn', 'vm-stop-btn'); }
+      else setMsg('vm-msg', r.error || 'Failed', 'error');
+    } catch (e) { setMsg('vm-msg', e.message, 'error'); }
+    btn.disabled = false;
+    refreshSetup();
+  }
+
+  async function openVmShell() {
+    const r = await window.electronAPI.setupOpenVmShell();
+    if (!r.success) setMsg('vm-msg', r.error || 'Failed to open shell', 'error');
+  }
+
+  async function coolifyInstall() {
+    const btn = document.getElementById('coolify-install-btn');
+    btn.disabled = true; setDot('coolify-install-dot', 'amber'); setMsg('coolify-install-msg', 'Installing — watch the log below...', '');
+    try {
+      const r = await window.electronAPI.setupCoolifyInstall();
+      if (r.success) { setDot('coolify-install-dot', 'green'); setMsg('coolify-install-msg', 'Coolify installed', 'success'); }
+      else { setDot('coolify-install-dot', 'red'); setMsg('coolify-install-msg', r.error || 'Failed', 'error'); }
+    } catch (e) { setDot('coolify-install-dot', 'red'); setMsg('coolify-install-msg', e.message, 'error'); }
+    btn.disabled = false;
+    refreshSetup();
+  }
+
+  async function coolifyStart() {
+    const btn = document.getElementById('coolify-start-btn');
+    btn.disabled = true; setDot('coolify-run-dot', 'amber'); setMsg('coolify-run-msg', 'Starting containers...', '');
+    try {
+      const r = await window.electronAPI.setupCoolifyStart();
+      if (r.success) { setDot('coolify-run-dot', 'green'); setMsg('coolify-run-msg', 'Coolify starting up', 'success'); toggle('coolify-stop-btn', 'coolify-start-btn'); pollCoolifyReady(); }
+      else { setDot('coolify-run-dot', 'red'); setMsg('coolify-run-msg', r.error || 'Failed', 'error'); }
+    } catch (e) { setDot('coolify-run-dot', 'red'); setMsg('coolify-run-msg', e.message, 'error'); }
+    btn.disabled = false;
+  }
+
+  async function coolifyStop() {
+    const btn = document.getElementById('coolify-stop-btn');
+    btn.disabled = true; setMsg('coolify-run-msg', 'Stopping...', '');
+    try {
+      const r = await window.electronAPI.setupCoolifyStop();
+      if (r.success) { setDot('coolify-run-dot', 'red'); setMsg('coolify-run-msg', 'Stopped', ''); toggle('coolify-start-btn', 'coolify-stop-btn'); }
+      else setMsg('coolify-run-msg', r.error || 'Failed', 'error');
+    } catch (e) { setMsg('coolify-run-msg', e.message, 'error'); }
+    btn.disabled = false;
+    refreshSetup();
+  }
+
+  function openCoolifyUi() {
+    document.querySelector('.tab-bar button[data-tab="coolify"]').click();
+    pollCoolifyReady();
+  }
+
+  // ── Setup log streaming ──
+  const logEl = document.getElementById('setup-log');
+  function appendSetupLog(t) {
+    logEl.textContent += t;
+    // Cap the log to the last ~800 lines to avoid runaway memory
+    const lines = logEl.textContent.split('\n');
+    if (lines.length > 800) logEl.textContent = lines.slice(-800).join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  window.electronAPI.onSetupLog(appendSetupLog);
+
+  // Auto-start progress: keeps the first-tab overlay honest about what the main
+  // process is doing on launch instead of sitting on "Checking Coolify status".
+  window.electronAPI.onAutoStart(({ phase, detail }) => {
+    if (phase === 'vm')       setProgress(20, 'Starting the Coolify VM...', detail);
+    if (phase === 'coolify')  setProgress(45, 'Starting Coolify...', detail);
+    if (phase === 'ready')    { setProgress(70, 'Coolify is up — connecting...', detail); pollCoolifyReady(); }
+    if (phase === 'failed')   setProgress(0, 'Could not start automatically', detail + ' — see the Setup tab.');
+    refreshSetup();
+  });
+  window.electronAPI.setupLogSnapshot().then(({ lines }) => { if (lines?.length) logEl.textContent = lines.join('\n') + '\n'; logEl.scrollTop = logEl.scrollHeight; });
+
+  // ── Coolify readiness polling + iframe loading overlay ──
+  const frame = document.getElementById('coolify-frame');
+  const loading = document.getElementById('coolify-loading');
+  let pollAttempt = 0;
+  let readinessTimer = null;
+
+  async function pollCoolifyReady() {
+    if (readinessTimer) clearTimeout(readinessTimer);
+    pollAttempt = 0;
+    setProgress(10, 'Waiting for Coolify to come online...', 'Polling http://localhost:8000');
+    loading.classList.remove('hidden');
+
+    const tick = async () => {
+      pollAttempt++;
+      const pct = Math.min(95, 20 + pollAttempt * 2);
+      setProgress(pct, null, null);
+      try {
+        const { ready } = await window.electronAPI.setupProbeReady();
+        if (ready) {
+          setProgress(100, 'Loading Coolify UI...', 'Connected');
+          frame.src = 'http://localhost:8000/';
+          frame.addEventListener('load', () => loading.classList.add('hidden'), { once: true });
+          setTimeout(() => loading.classList.add('hidden'), 6000);
+          return;
+        }
+      } catch {}
+      if (pollAttempt < 180) readinessTimer = setTimeout(tick, 2000);
+      else setProgress(0, 'Coolify did not come online', 'Check the Setup tab logs for errors.');
+    };
+    tick();
+  }
+
+  // On app open: if Coolify is already running, load the iframe immediately;
+  // otherwise show the "go to Setup" message.
+  (async () => {
+    const s = await refreshSetup();
+    if (s?.coolifyRunning) pollCoolifyReady();
+    else setProgress(0, 'Coolify is not running yet', 'Go to the Setup tab to install and start it.');
+  })();
+
+  // ── Cloudflare tunnel UI ──
+  async function loadTunnelUi() {
+    let installed = false;
+    try {
+      const cf = await window.electronAPI.cloudflaredCheck();
+      installed = cf.installed;
+      setDot('cf-dot', installed ? 'green' : 'red');
+      if (installed) document.getElementById('cf-install-btn').textContent = 'Installed';
+    } catch { setDot('cf-dot', 'red'); }
+
+    let authenticated = false;
+    if (installed) {
+      document.getElementById('step-auth').style.display = '';
+      try {
+        const auth = await window.electronAPI.cloudflaredAuthStatus();
+        authenticated = auth.authenticated;
+        setDot('auth-dot', authenticated ? 'green' : 'red');
+        if (authenticated) document.getElementById('auth-btn').textContent = 'Authenticated';
+      } catch { setDot('auth-dot', 'red'); }
+    }
+
+    let configured = false, httpHost = null, sshHost = null;
+    if (authenticated) {
+      document.getElementById('step-setup').style.display = '';
+      try {
+        const ts = await window.electronAPI.cloudflaredTunnelStatus();
+        configured = ts.configured;
+        httpHost = ts.httpHost; sshHost = ts.sshHost;
+        setDot('setup-dot', configured ? 'green' : 'red');
+        if (configured) {
+          if (httpHost) document.getElementById('http-host').value = httpHost;
+          if (sshHost) document.getElementById('ssh-host').value = sshHost;
+          document.getElementById('setup-btn').textContent = 'Update';
+        }
+      } catch { setDot('setup-dot', 'red'); }
+    }
+
+    if (configured && httpHost) {
+      // Step 4 only makes sense once an HTTP hostname exists to apply.
+      document.getElementById('step-domain').style.display = '';
+      try {
+        const applied = await window.electronAPI.coolifyAppliedDomain();
+        const matches = applied && applied.host === httpHost;
+        setDot('domain-dot', matches ? 'green' : 'red');
+        document.getElementById('domain-current').textContent = applied
+          ? `Coolify currently advertises ${applied.url}${matches ? '' : ` — does not match ${httpHost}`}`
+          : 'Coolify still advertises its local address.';
+        document.getElementById('domain-apply-btn').textContent =
+          matches ? `Re-apply ${httpHost}` : `Apply ${httpHost} to Coolify`;
+      } catch { setDot('domain-dot', 'red'); }
+    }
+
+    if (configured) {
+      document.getElementById('step-run').style.display = '';
+      const parts = [];
+      if (httpHost) parts.push('HTTP: ' + httpHost);
+      if (sshHost)  parts.push('SSH: '  + sshHost);
+      document.getElementById('tunnel-configured-host').textContent = 'Configured — ' + parts.join(' · ');
+      try {
+        const t = await window.electronAPI.tunnelStatus();
+        setDot('tunnel-dot', t.running ? 'green' : 'red');
+        if (t.running) {
+          toggle('tunnel-stop-btn', 'tunnel-start-btn');
+          if (t.httpUrl) { document.getElementById('tunnel-url').textContent = t.httpUrl; document.getElementById('tunnel-url-row').style.display = ''; }
+          if (t.sshHost) { document.getElementById('ssh-host-display').textContent = t.sshHost; document.getElementById('ssh-url-row').style.display = ''; }
+        }
+      } catch { setDot('tunnel-dot', 'red'); }
+    }
+  }
+  loadTunnelUi();
+
+  async function cfInstall() {
+    const btn = document.getElementById('cf-install-btn');
+    btn.disabled = true; setDot('cf-dot', 'amber'); setMsg('cf-msg', 'Installing...', '');
+    try {
+      const r = await window.electronAPI.cloudflaredInstall();
+      if (r.success) { setDot('cf-dot', 'green'); setMsg('cf-msg', 'Installed', 'success'); btn.textContent = 'Installed'; await loadTunnelUi(); }
+      else { setDot('cf-dot', 'red'); setMsg('cf-msg', r.error || 'Failed', 'error'); }
+    } catch (e) { setDot('cf-dot', 'red'); setMsg('cf-msg', e.message, 'error'); }
+    btn.disabled = false;
+  }
+
+  async function cfLogin() {
+    const btn = document.getElementById('auth-btn');
+    btn.disabled = true; setDot('auth-dot', 'amber'); setMsg('auth-msg', 'Opening browser — complete auth there...', '');
+    try {
+      const r = await window.electronAPI.cloudflaredLogin();
+      if (r.success) { setDot('auth-dot', 'green'); setMsg('auth-msg', 'Authenticated', 'success'); btn.textContent = 'Authenticated'; await loadTunnelUi(); }
+      else { setDot('auth-dot', 'red'); setMsg('auth-msg', r.error || 'Failed', 'error'); }
+    } catch (e) { setDot('auth-dot', 'red'); setMsg('auth-msg', e.message, 'error'); }
+    btn.disabled = false;
+  }
+
+  async function applyDomain() {
+    const host = document.getElementById('http-host').value.trim();
+    if (!host) { setMsg('domain-msg', 'Set an HTTP host in step 3 first', 'error'); return; }
+    const btn = document.getElementById('domain-apply-btn');
+    btn.disabled = true;
+    setDot('domain-dot', 'unknown');
+    setMsg('domain-msg', 'Rewriting APP_URL and restarting Coolify (this can take a minute)...', '');
+    try {
+      const r = await window.electronAPI.coolifyApplyDomain(host);
+      if (r.success) {
+        setDot('domain-dot', 'green');
+        setMsg('domain-msg', `Coolify now advertises ${r.url} (backup: ${r.backup})`, 'success');
+      } else {
+        setDot('domain-dot', 'red');
+        setMsg('domain-msg', r.error || 'Failed', 'error');
+      }
+    } catch (e) {
+      setDot('domain-dot', 'red');
+      setMsg('domain-msg', e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      refreshTunnel();
+    }
+  }
+
+  async function cfSetupTunnel() {
+    const httpHost = document.getElementById('http-host').value.trim();
+    const sshHost = document.getElementById('ssh-host').value.trim();
+    if (!httpHost && !sshHost) { setMsg('setup-msg', 'Enter at least one hostname', 'error'); return; }
+    const btn = document.getElementById('setup-btn');
+    btn.disabled = true; setDot('setup-dot', 'amber'); setMsg('setup-msg', 'Creating tunnel and DNS routes...', '');
+    try {
+      const r = await window.electronAPI.cloudflaredSetupTunnel({ httpHost, sshHost });
+      if (r.success) { setDot('setup-dot', 'green'); setMsg('setup-msg', 'Configured', 'success'); btn.textContent = 'Update'; await loadTunnelUi(); }
+      else { setDot('setup-dot', 'red'); setMsg('setup-msg', r.error || 'Failed', 'error'); }
+    } catch (e) { setDot('setup-dot', 'red'); setMsg('setup-msg', e.message, 'error'); }
+    btn.disabled = false;
+  }
+
+  function showTunnelLog() { document.getElementById('tunnel-log').textContent = ''; document.getElementById('tunnel-log-card').style.display = ''; }
+  function hideTunnelLog() { document.getElementById('tunnel-log-card').style.display = 'none'; }
+  function appendTunnelLog(text) { const el = document.getElementById('tunnel-log'); el.textContent += text; el.scrollTop = el.scrollHeight; }
+
+  async function tunnelStart() {
+    const btn = document.getElementById('tunnel-start-btn');
+    btn.disabled = true; setDot('tunnel-dot', 'amber'); setMsg('tunnel-msg', 'Starting tunnel...', '');
+    showTunnelLog();
+    try {
+      const r = await window.electronAPI.tunnelStart();
+      if (r.success) {
+        setDot('tunnel-dot', 'green'); setMsg('tunnel-msg', 'Running', 'success');
+        toggle('tunnel-stop-btn', 'tunnel-start-btn');
+        if (r.httpUrl) { document.getElementById('tunnel-url').textContent = r.httpUrl; document.getElementById('tunnel-url-row').style.display = ''; }
+        if (r.sshHost) { document.getElementById('ssh-host-display').textContent = r.sshHost; document.getElementById('ssh-url-row').style.display = ''; }
+      } else { setDot('tunnel-dot', 'red'); setMsg('tunnel-msg', r.error || 'Failed', 'error'); btn.disabled = false; }
+    } catch (e) { setDot('tunnel-dot', 'red'); setMsg('tunnel-msg', e.message, 'error'); btn.disabled = false; }
+  }
+
+  async function tunnelStop() {
+    try {
+      await window.electronAPI.tunnelStop();
+      setDot('tunnel-dot', 'red'); setMsg('tunnel-msg', 'Stopped', '');
+      toggle('tunnel-start-btn', 'tunnel-stop-btn');
+      document.getElementById('tunnel-start-btn').disabled = false;
+      document.getElementById('tunnel-url-row').style.display = 'none';
+      document.getElementById('ssh-url-row').style.display = 'none';
+      hideTunnelLog();
+    } catch (e) { setMsg('tunnel-msg', e.message, 'error'); }
+  }
+
+  function copyUrl(id) {
+    const url = document.getElementById(id).textContent;
+    if (url) navigator.clipboard.writeText(url);
+  }
+  function openUrl(id) {
+    const url = document.getElementById(id).textContent;
+    if (url) window.electronAPI.openExternal(url);
+  }
+  function copySshCommand() {
+    const host = document.getElementById('ssh-host-display').textContent.trim();
+    if (!host) return;
+    const cmd = `ssh -o ProxyCommand="cloudflared access ssh --hostname %h" ubuntu@${host}`;
+    navigator.clipboard.writeText(cmd);
+    setMsg('tunnel-msg', 'SSH command copied to clipboard', 'success');
+  }
+
+  window.electronAPI.onTunnelUrl((data) => {
+    if (data.httpUrl) { document.getElementById('tunnel-url').textContent = data.httpUrl; document.getElementById('tunnel-url-row').style.display = ''; }
+    if (data.sshHost) { document.getElementById('ssh-host-display').textContent = data.sshHost; document.getElementById('ssh-url-row').style.display = ''; }
+    setMsg('tunnel-msg', 'Running', 'success');
+  });
+  window.electronAPI.onTunnelLog(appendTunnelLog);
+</script>
+<script src="update-ui.js"></script>
+</body>
+</html>

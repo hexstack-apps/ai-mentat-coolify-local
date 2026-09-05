@@ -1,0 +1,19 @@
+node_modules/
+/dist/
+/electron-main.bundle.js
+.DS_Store
+
+# copied from shared/ into the repo root at bundle time.
+# Anchored to root so the source copies in shared/ stay tracked.
+/update-ui.js
+
+# signing material — never commit
+certs/
+
+# generated / local state
+app-updates-repo/
+.coolify-data/
+lima-bin/bin/
+lima-bin/share/
+.mentat-rbxs/
+.roblox-dev/

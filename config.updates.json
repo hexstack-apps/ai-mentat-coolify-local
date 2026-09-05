@@ -1,0 +1,23 @@
+{
+  "updatesRepoUrl": "",
+  "butlerApiKeyEnvVar": "BUTLER_API_KEY",
+  "apps": {
+    "mentat-coolify": {
+      "dir": ".",
+      "productName": "Hexstack Mentat Coolify",
+      "itchIo": {
+        "user": "hexstack-app",
+        "game": "mentat-coolify",
+        "channels": {
+          "mac": "osx",
+          "win": "windows",
+          "linux": "linux"
+        }
+      },
+      "updatesRepo": {
+        "subdir": "mentat-coolify",
+        "feedUrl": ""
+      }
+    }
+  }
+}
