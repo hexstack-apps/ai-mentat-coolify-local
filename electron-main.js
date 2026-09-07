@@ -4,31 +4,24 @@ const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
-const LIMA = require('./lib/lima');
-const { quiet, attempt, quietAsync } = require('./lib/failsafe');
+const LIMA = require('./sdk/logic/lima');
+const { quiet, attempt, quietAsync } = require('./sdk/utils/failsafe');
+const { shellEnv: sdkShellEnv, run, tryRun } = require('./sdk/utils/env');
+const { killProcess, createCleanup } = require('./sdk/utils/proc');
+const { createSettingsStore, registerSettingsIpc } = require('./sdk/logic/settings');
+const { registerOpenExternal, openPathHandler } = require('./sdk/logic/shell');
+const { registerPtyIpc, resolveHelperPath } = require('./sdk/logic/pty');
+const { registerTunnelIpc } = require('./sdk/logic/tunnel-ipc');
+const { createWindow: createWindow_ } = require('./sdk/ui/window');
 const { setupAutoUpdate } = require('./sdk/logic/auto-update');
 
 // ─── Env helpers ──────────────────────────────────────────────────────────
 
 function shellEnv() {
-  const home = os.homedir();
-  const isWin = process.platform === 'win32';
-  const sep = isWin ? ';' : ':';
-  const extra = [path.join(home, '.local', 'bin'), path.join(home, '.bun', 'bin')];
-  if (isWin) {
-    extra.push(
-      path.join(home, 'AppData', 'Roaming', 'npm'),
-      path.join(home, 'AppData', 'Local', 'Programs', 'claude-code'),
-    );
-  } else {
-    extra.push('/opt/homebrew/bin', '/usr/local/bin');
-  }
-  return {
-    ...process.env,
-    PATH: extra.join(sep) + sep + (process.env.PATH || (isWin ? '' : '/usr/bin:/bin')),
-  };
+  return sdkShellEnv({ home: os.homedir() });
 }
 
+/** Kept for the call sites that still pass a composed command string. */
 function execSyncEnv(cmd, opts = {}) {
   return execSync(cmd, { ...opts, env: { ...shellEnv(), ...opts.env } });
 }
@@ -41,7 +34,6 @@ let sshTunnelProcess;       // TCP cloudflared named tunnel for SSH (port 22)
 let ptyProcess;
 let tunnelUrl = null;
 let sshTunnelHost = null;
-let cleanupDone = false;
 
 // ─── Persistent storage layout ────────────────────────────────────────────
 //
@@ -120,16 +112,11 @@ function sendSetupLog(t) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('setup:log', t);
 }
 
-function loadSettings() {
-  try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); }
-  catch { return {}; }
-}
-function saveSettings(s) {
-  // Atomic write: tmp file + rename so a crash mid-write can't corrupt settings.
-  const tmp = SETTINGS_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
-  fs.renameSync(tmp, SETTINGS_FILE);
-}
+// The SDK store writes atomically (temp file + rename), which is where this
+// app's own saveSettings behaviour went when it was extracted.
+const settings = createSettingsStore({ dir: dataDir });
+const loadSettings = () => settings.load();
+const saveSettings = (patch) => settings.save(patch);
 
 // ─── Lima VM helpers (cross-platform Docker host) ─────────────────────────
 
@@ -155,7 +142,7 @@ function getLimaBin() {
   // Resolution ORDER lives in lib/lima.js and is unit tested; this supplies
   // only the real filesystem/exec probes. `canRun` must return false rather
   // than throw, so a present-but-unrunnable binary does not abort the search.
-  return LIMA.resolveLimaBin({
+  return LIMA.resolveLimactl({
     bundledPath: bundled,
     exists: (p) => quiet('lima.exists', () => fs.existsSync(p), false, { p }),
     canRun: (cmd) => attempt('lima.version', () => {
@@ -383,43 +370,31 @@ function checkCoolifyReady() {
 // ─── Window ───────────────────────────────────────────────────────────────
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200, height: 820, title: 'Coolify Mentat',
-    icon: path.join(__dirname, 'icon.png'),
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: false,
-      webSecurity: false,
-      preload: path.join(__dirname, 'preload.js'),
+  mainWindow = createWindow_({
+    BrowserWindow,
+    width: 1200,
+    height: 820,
+    title: 'Coolify Mentat',
+    preload: path.join(__dirname, 'preload.js'),
+    load: { file: path.join(__dirname, 'app.html') },
+    // FIXME(security): this app still runs with webSecurity OFF, and it cannot
+    // be launched in the current environment to prove otherwise. n8n turned the
+    // same flag ON with no ill effect once headerRewrite was scoped, so this is
+    // very likely safe to flip — but flipping it blind on an app nobody can run
+    // is how a refactor breaks a product. Launch it, confirm the Coolify iframe
+    // still renders, then delete this override and this comment.
+    webPreferences: { webSecurity: false },
+    // Narrowed from <all_urls> to Coolify's own origin. Narrowing can only
+    // reduce what is stripped, so unlike the flag above it is safe unverified.
+    headerRewrite: {
+      urls: ['http://localhost:8000/*', 'http://127.0.0.1:8000/*'],
+      stripFrameHeaders: true,
+      sameSiteNone: true,
     },
-    show: false,
+    onReady: (win) => setupAutoUpdate(win),
   });
-
   mainWindow.on('closed', () => cleanup());
   mainWindow.webContents.on('did-fail-load', (_, code, desc) => console.error('Load failed:', desc));
-
-  // Strip X-Frame-Options / CSP so the iframe can render Coolify served from localhost.
-  mainWindow.webContents.session.webRequest.onHeadersReceived({ urls: ['<all_urls>'] }, (details, callback) => {
-    const headers = { ...details.responseHeaders };
-    for (const key of Object.keys(headers)) {
-      const lower = key.toLowerCase();
-      if (lower === 'x-frame-options' || lower === 'content-security-policy') delete headers[key];
-      if (lower === 'set-cookie') {
-        headers[key] = headers[key].map(cookie => {
-          if (!/samesite/i.test(cookie)) return cookie + '; SameSite=None; Secure';
-          return cookie.replace(/samesite=\w+/i, 'SameSite=None');
-        });
-      }
-    }
-    callback({ responseHeaders: headers });
-  });
-
-  mainWindow.loadFile(path.join(__dirname, 'app.html'));
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-    if (!app.isPackaged) mainWindow.webContents.openDevTools();
-  });
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────
@@ -433,9 +408,7 @@ function killProc(proc) {
   setTimeout(() => { try { if (!proc.killed) proc.kill('SIGKILL'); } catch {} }, 3000);
 }
 
-function cleanup() {
-  if (cleanupDone) return;
-  cleanupDone = true;
+const cleanup = createCleanup(() => {
   killProc(tunnelProcess); tunnelProcess = null; tunnelUrl = null;
   killProc(sshTunnelProcess); sshTunnelProcess = null; sshTunnelHost = null;
   if (ptyProcess) {
@@ -447,7 +420,7 @@ function cleanup() {
   // We intentionally do NOT stop the Lima VM on quit — Coolify runs long-lived
   // workloads (deployments, background jobs) that should outlive the UI.
   setTimeout(() => app.quit(), 500);
-}
+});
 
 // ─── IPC: Setup / Status ─────────────────────────────────────────────────
 
@@ -650,235 +623,42 @@ ipcMain.handle('settings:set', (_, patch) => {
 ipcMain.handle('shell:open-logs-dir', () => shell.openPath(logsDir));
 ipcMain.handle('shell:open-lima-dir', () => shell.openPath(LIMA_DIR));
 
-// ─── IPC: Cloudflare Tunnel (HTTP — ported from n8n-mentat) ───────────────
+// ─── IPC: Cloudflare Tunnel ───────────────────────────────────────────────
+//
+// TWO services, which is the case the SDK's ingress LIST exists for: the
+// Coolify web UI on http://localhost:8000 and SSH on ssh://localhost:2222.
+// An API shaped around one service would have half-routed this tunnel.
 
-ipcMain.handle('cloudflared:check', () => {
-  try { execSyncEnv('cloudflared --version', { timeout: 5000, stdio: 'pipe' }); return { installed: true }; }
-  catch {
-    try { execSyncEnv('npx cloudflared --version', { timeout: 15000, stdio: 'pipe' }); return { installed: true }; }
-    catch { return { installed: false }; }
-  }
+registerTunnelIpc(ipcMain, {
+  getWindow: () => mainWindow,
+  tunnelName: 'mentat-coolify',
+  services: [
+    { name: 'web', scheme: 'http', port: 8000 },
+    { name: 'ssh', scheme: 'ssh', port: 2222 },
+  ],
+  settings,
+  configPath: path.join(os.homedir(), '.cloudflared', 'config.yml'),
+  credentialsDir: path.join(os.homedir(), '.cloudflared'),
+  deps: { run, tryRun, spawn, fs },
 });
 
-ipcMain.handle('cloudflared:install', () => {
-  try { execSyncEnv('npx bun add -g cloudflared', { timeout: 60000 }); return { success: true }; }
-  catch (e) { return { success: false, error: e.stderr?.toString().trim() || e.message }; }
-});
+// ─── IPC: PTY ─────────────────────────────────────────────────────────────
 
-ipcMain.handle('cloudflared:auth-status', () => {
-  const certPath = path.join(os.homedir(), '.cloudflared', 'cert.pem');
-  return { authenticated: fs.existsSync(certPath) };
-});
-
-ipcMain.handle('cloudflared:login', async () => {
-  try {
-    const proc = spawn('cloudflared', ['tunnel', 'login'], { stdio: 'pipe', detached: true, env: shellEnv() });
-    return new Promise((resolve) => {
-      let output = '';
-      proc.stdout.on('data', (d) => { output += d.toString(); });
-      proc.stderr.on('data', (d) => { output += d.toString(); });
-      proc.on('exit', (code) => {
-        if (code === 0) resolve({ success: true });
-        else resolve({ success: false, error: output.trim() || `Exit code ${code}` });
-      });
-      setTimeout(() => { try { proc.kill(); } catch {} resolve({ success: false, error: 'Login timed out' }); }, 300000);
-    });
-  } catch (e) { return { success: false, error: e.message }; }
-});
-
-// Parses ~/.cloudflared/config.yml to find the hostname we wired up for Coolify
-// (HTTP → localhost:8000) and for SSH (TCP → localhost:2222).
-function readTunnelConfig() {
-  const configPath = path.join(os.homedir(), '.cloudflared', 'config.yml');
-  if (!fs.existsSync(configPath)) return { hasConfig: false };
-  let tunnelName = null, httpHost = null, sshHost = null;
-  try {
-    const cfg = fs.readFileSync(configPath, 'utf8');
-    const m = cfg.match(/^tunnel:\s*(.+)$/m);
-    if (m) tunnelName = m[1].trim();
-    const lines = cfg.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const svc = lines[i].match(/service:\s*(.+)$/);
-      if (!svc) continue;
-      const value = svc[1].trim();
-      const hostMatch = lines[i - 1]?.match(/hostname:\s*(.+)/);
-      if (!hostMatch) continue;
-      const host = hostMatch[1].trim().replace(/['"]/g, '');
-      if (/http:\/\/localhost:8000/.test(value)) httpHost = host;
-      if (/ssh:\/\/localhost:2222/.test(value)) sshHost = host;
-    }
-  } catch (err) {
-    // A parse failure here previously reported "no hostnames configured" for a
-    // perfectly good tunnel — the config exists, we just could not read it.
-    quiet('cloudflared.parseConfig', () => { throw err; }, null, { tunnelName });
-  }
-  return { hasConfig: true, tunnelName, httpHost, sshHost };
-}
-
-function writeTunnelConfig(tunnelId, httpHost, sshHost) {
-  const configPath = path.join(os.homedir(), '.cloudflared', 'config.yml');
-  const credsPath = path.join(os.homedir(), '.cloudflared', `${tunnelId}.json`);
-  const ingress = ['ingress:'];
-  if (httpHost) ingress.push(`  - hostname: ${httpHost}`, '    service: http://localhost:8000');
-  if (sshHost)  ingress.push(`  - hostname: ${sshHost}`,  '    service: ssh://localhost:2222');
-  ingress.push('  - service: http_status:404');
-  const yaml = [
-    `tunnel: ${tunnelId}`,
-    `credentials-file: ${credsPath}`,
-    '',
-    ...ingress,
-    '',
-    'metrics: 127.0.0.1:0',
-    '',
-  ].join('\n');
-  fs.writeFileSync(configPath, yaml);
-}
-
-ipcMain.handle('cloudflared:tunnel-status', () => {
-  const info = readTunnelConfig();
-  return { configured: info.hasConfig && !!info.tunnelName && (!!info.httpHost || !!info.sshHost), ...info };
-});
-
-async function ensureTunnelId(tunnelName, sendLog) {
-  let tunnelId = null;
-  try {
-    const list = execSyncEnv('cloudflared tunnel list -o json', { timeout: 15000, stdio: 'pipe' }).toString();
-    const tunnels = JSON.parse(list);
-    const existing = tunnels.find(t => t.name === tunnelName);
-    if (existing) {
-      const existingCreds = path.join(os.homedir(), '.cloudflared', `${existing.id}.json`);
-      if (fs.existsSync(existingCreds)) tunnelId = existing.id;
-      else {
-        if (sendLog) sendLog('Tunnel exists but credentials missing locally, recreating...\n');
-        try { execSyncEnv(`cloudflared tunnel delete -f ${tunnelName}`, { timeout: 15000, stdio: 'pipe' }); } catch {}
-      }
-    }
-  } catch {}
-  if (!tunnelId) {
-    const out = execSyncEnv(`cloudflared tunnel create ${tunnelName}`, { timeout: 15000, stdio: 'pipe' }).toString();
-    const match = out.match(/([0-9a-f-]{36})/);
-    if (!match) throw new Error('Failed to parse tunnel ID from: ' + out);
-    tunnelId = match[1];
-  }
-  return tunnelId;
-}
-
-ipcMain.handle('cloudflared:setup-tunnel', async (_, payload) => {
-  try {
-    const { httpHost, sshHost } = payload || {};
-    if (!httpHost && !sshHost) return { success: false, error: 'At least one hostname is required' };
-
-    const tunnelName = 'coolify';
-    const tunnelId = await ensureTunnelId(tunnelName);
-    writeTunnelConfig(tunnelId, httpHost?.trim() || null, sshHost?.trim() || null);
-
-    for (const host of [httpHost, sshHost].filter(Boolean)) {
-      try {
-        execSyncEnv(`cloudflared tunnel route dns --overwrite-dns "${tunnelId}" "${host}"`, { timeout: 15000, stdio: 'pipe' });
-      } catch (e) {
-        const err = e.stderr?.toString() || '';
-        if (!err.includes('already exists')) return { success: false, error: `DNS route failed for ${host}: ` + err.trim() };
-      }
-    }
-
-    return { success: true, tunnelId, httpHost: httpHost || null, sshHost: sshHost || null };
-  } catch (e) {
-    return { success: false, error: e.stderr?.toString().trim() || e.message };
-  }
-});
-
-ipcMain.handle('tunnel:start', async () => {
-  if (tunnelProcess && !tunnelProcess.killed) return { success: true, url: tunnelUrl };
-  try {
-    const info = readTunnelConfig();
-    if (!info.hasConfig || (!info.httpHost && !info.sshHost)) {
-      return { success: false, error: 'No tunnel configured — complete setup first' };
-    }
-
-    tunnelProcess = spawn('cloudflared', ['tunnel', 'run'], { stdio: 'pipe', detached: true, env: shellEnv() });
-    tunnelUrl = null;
-    sshTunnelHost = info.sshHost || null;
-
-    const sendLog = (t) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('tunnel:log', t); };
-    let connected = false;
-    const handler = (data) => {
-      const text = data.toString();
-      sendLog(text);
-      if (!connected && text.includes('Registered tunnel connection')) {
-        connected = true;
-        if (info.httpHost) tunnelUrl = `https://${info.httpHost}`;
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('tunnel:url-update', { httpUrl: tunnelUrl, sshHost: info.sshHost });
-        }
-      }
-    };
-    tunnelProcess.stdout.on('data', handler);
-    tunnelProcess.stderr.on('data', handler);
-    tunnelProcess.on('exit', (code) => {
-      sendLog(`\n[cloudflared exited with code ${code}]\n`);
-      tunnelProcess = null; tunnelUrl = null; sshTunnelHost = null;
-    });
-
-    for (let i = 0; i < 20 && !connected; i++) await new Promise(r => setTimeout(r, 1000));
-    if (!connected) return { success: false, error: 'Tunnel failed to connect' };
-    return { success: true, httpUrl: tunnelUrl, sshHost: info.sshHost };
-  } catch (e) { return { success: false, error: e.message }; }
-});
-
-ipcMain.handle('tunnel:stop', () => {
-  killProc(tunnelProcess); tunnelProcess = null; tunnelUrl = null; sshTunnelHost = null;
-  return { success: true };
-});
-
-ipcMain.handle('tunnel:status', () => ({
-  running: !!(tunnelProcess && !tunnelProcess.killed),
-  httpUrl: tunnelUrl,
-  sshHost: sshTunnelHost,
-}));
-
-// ─── IPC: PTY (optional terminal — mirrors n8na/mcbes for parity) ─────────
-
-ipcMain.handle('pty:spawn', async (_, cols, rows) => {
-  try {
-    if (ptyProcess) { try { ptyProcess.kill(); } catch {} ptyProcess = null; }
-    const home = os.homedir();
-    const env = { ...shellEnv(), TERM: 'xterm-256color', COLUMNS: String(cols || 80), LINES: String(rows || 24) };
-    const bin = getLimaBin();
-    // When Lima is available, drop the user directly into the Coolify VM shell
-    // so they can run `docker`, `docker compose logs`, etc. without the app UI.
-    if (process.platform === 'win32') {
-      const args = bin ? ['/k', bin, 'shell', LIMA_VM_NAME] : ['/k'];
-      ptyProcess = spawn('cmd.exe', args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: home, env });
-    } else {
-      let helperPath = path.join(__dirname, 'pty-helper.py');
-      if (app.isPackaged) helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');
-      const shellArgs = bin
-        ? [bin, 'shell', LIMA_VM_NAME]
-        : [process.env.SHELL || '/bin/zsh', '-l'];
-      ptyProcess = spawn('python3', [helperPath, ...shellArgs], { stdio: ['pipe', 'pipe', 'pipe'], cwd: home, env: { ...env, LIMA_HOME: LIMA_DIR } });
-    }
-    ptyProcess.stdout.on('data', (d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', d.toString()); });
-    ptyProcess.stderr.on('data', (d) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:data', d.toString()); });
-    ptyProcess.on('exit', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('pty:exit'); ptyProcess = null; });
-    return { success: true };
-  } catch (e) { return { success: false, error: e.message }; }
-});
-ipcMain.on('pty:write', (_, data) => { if (ptyProcess && !ptyProcess.killed) ptyProcess.stdin.write(data); });
-ipcMain.on('pty:resize', () => { if (ptyProcess?.pid && process.platform !== 'win32') try { process.kill(ptyProcess.pid, 'SIGWINCH'); } catch {} });
-ipcMain.on('pty:kill', () => {
-  if (ptyProcess) {
-    if (process.platform !== 'win32') try { process.kill(-ptyProcess.pid, 'SIGTERM'); } catch {}
-    try { ptyProcess.kill(); } catch {}
-    ptyProcess = null;
-  }
+const localClaude = path.join(os.homedir(), '.local', 'bin', 'claude');
+registerPtyIpc(ipcMain, {
+  getWindow: () => mainWindow,
+  command: fs.existsSync(localClaude) ? localClaude : 'claude',
+  args: [],
+  cwd: os.homedir(),
+  env: { ...shellEnv(), TERM: 'xterm-256color' },
+  helperPath: resolveHelperPath(path.join(__dirname, 'sdk', 'utils'), { isPackaged: app.isPackaged }),
+  deps: { spawn },
 });
 
 // ─── IPC: Shell ───────────────────────────────────────────────────────────
 
-ipcMain.handle('shell:open-external', (_, url) => {
-  if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url);
-});
-ipcMain.handle('shell:open-data-dir', () => shell.openPath(dataDir));
+registerOpenExternal(ipcMain, shell);
+ipcMain.handle('shell:open-logs-dir', openPathHandler(shell, logsDir));
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────
 
