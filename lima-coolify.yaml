@@ -1,0 +1,61 @@
+# Lima VM config for Coolify self-hosted
+# Used by Hexstack Mentat Coolify to run Coolify's docker-compose stack on macOS
+# Uses Apple Virtualization.framework (vz) — no QEMU required
+
+vmType: vz
+arch: default
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: 4
+memory: "4GiB"
+disk: "30GiB"
+
+# Coolify runs its own Docker stack inside the VM, bootstrapped by the official
+# install.sh. We don't need Lima's containerd integration (in fact it conflicts),
+# so keep it off and let the install script bring up Docker.
+containerd:
+  system: false
+  user: false
+
+portForwards:
+  # Coolify web UI
+  - guestPort: 8000
+    hostPort: 8000
+  # Realtime (websocket) connections
+  - guestPort: 6001
+    hostPort: 6001
+  # Terminal
+  - guestPort: 6002
+    hostPort: 6002
+  # Docker proxy dashboard
+  - guestPort: 8080
+    hostPort: 8080
+  # SSH. Guest port 22 is reserved by Lima for its own management channel, so
+  # the provisioning script below makes sshd listen on :2222 too and we forward
+  # that instead. This is what the Cloudflare SSH route points at.
+  - guestPort: 2222
+    hostPort: 2222
+
+mounts: []
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      # Coolify's install.sh installs Docker itself, so we deliberately do NOT
+      # pre-install docker/containerd here to avoid conflicts.
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends curl ca-certificates openssh-server
+      # Make sshd listen on 2222 in addition to Lima's reserved :22
+      if ! grep -qE '^Port 2222\b' /etc/ssh/sshd_config; then
+        echo 'Port 2222' >> /etc/ssh/sshd_config
+      fi
+      systemctl restart ssh || systemctl restart sshd || true
+      systemctl enable --now ssh || true

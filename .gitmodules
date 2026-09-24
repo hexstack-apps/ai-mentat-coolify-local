@@ -1,0 +1,4 @@
+[submodule "sdk"]
+	path = sdk
+	url = https://github.com/hexstack-apps/ai-mentat-sdk.git
+	branch = main
